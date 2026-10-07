@@ -1,201 +1,102 @@
 import express from 'express';
+import fetch from 'node-fetch';
+import { FormData } from 'formdata-node';
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+app.use(express.json());
+app.use(express.static('public'));
 
-// Host the client-side resolver portal
-app.get('/', (req, res) => {
-  res.send(`<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Premium Key Resolver</title>
-  <style>
-    * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-    body {
-      background-color: #0b0f19;
-      color: #e2e8f0;
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      min-height: 100vh;
-      margin: 0;
-      padding: 16px;
-    }
-    .container {
-      background: #1e293b;
-      border: 1px solid #334155;
-      border-radius: 12px;
-      padding: 28px;
-      width: 100%;
-      max-width: 480px;
-      box-shadow: 0 10px 30px rgba(0,0,0,0.5);
-    }
-    h2 { margin: 0 0 16px 0; font-size: 1.4rem; text-align: center; color: #f8fafc; }
-    .badge {
-      display: inline-block;
-      padding: 4px 8px;
-      border-radius: 6px;
-      font-size: 0.75rem;
-      background: #10b981;
-      color: #fff;
-      margin-bottom: 20px;
-      text-align: center;
-      width: 100%;
-    }
-    label { display: block; margin-bottom: 6px; font-size: 0.85rem; color: #94a3b8; font-weight: 500; }
-    input[type="text"] {
-      width: 100%;
-      padding: 12px;
-      border-radius: 8px;
-      border: 1px solid #475569;
-      background: #0f172a;
-      color: #fff;
-      font-size: 0.95rem;
-      margin-bottom: 12px;
-      outline: none;
-    }
-    input[type="text"]:focus { border-color: #38bdf8; }
-    button {
-      width: 100%;
-      padding: 12px;
-      background: #0284c7;
-      color: #fff;
-      border: none;
-      border-radius: 8px;
-      font-size: 0.95rem;
-      font-weight: 600;
-      cursor: pointer;
-      margin-bottom: 8px;
-    }
-    button:hover { background: #0369a1; }
-    .btn-secondary { background: #334155; }
-    .btn-secondary:hover { background: #475569; }
-    .status { margin-top: 14px; font-size: 0.85rem; text-align: center; }
-    .success { color: #4ade80; }
-    .error { color: #f87171; }
-    #token-panel { border-bottom: 1px solid #334155; padding-bottom: 16px; margin-bottom: 16px; }
-  </style>
-</head>
-<body>
+const jobs = new Map();
 
-<div class="container">
-  <h2>Instant Resolver</h2>
-  <div class="badge" id="storage-status">Checking stored credentials...</div>
-
-  <!-- Panel 1: Save permanent token once -->
-  <div id="token-panel">
-    <label for="jwt-token">1. Paste Master Token (Saved Locally):</label>
-    <input type="text" id="jwt-token" placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6..." />
-    <button onclick="saveStoredToken()">Save Master Token</button>
-  </div>
-
-  <!-- Panel 2: Link Input & Resolver -->
-  <div id="resolve-panel">
-    <label for="shortener-url">2. Paste Link (e.g. tipsguru.in/prolink.php?id=...):</label>
-    <input type="text" id="shortener-url" placeholder="https://tipsguru.in/prolink.php?id=..." />
-    <button onclick="resolveAndRedirect()">Resolve & Go</button>
-    <button class="btn-secondary" onclick="resetToken()">Change Master Token</button>
-  </div>
-
-  <div id="status" class="status"></div>
-</div>
-
-<script>
-  const STORAGE_KEY = 'pw_master_access_token';
-
-  window.addEventListener('DOMContentLoaded', () => {
-    const existing = localStorage.getItem(STORAGE_KEY);
-    const badge = document.getElementById('storage-status');
-    const panel = document.getElementById('token-panel');
-
-    if (existing) {
-      badge.innerText = 'Master Token Active in Browser';
-      badge.style.background = '#059669';
-      panel.style.display = 'none';
-    } else {
-      badge.innerText = 'Master Token Not Configured';
-      badge.style.background = '#d97706';
-      panel.style.display = 'block';
-    }
-  });
-
-  function saveStoredToken() {
-    const raw = document.getElementById('jwt-token').value.trim();
-    if (!raw) {
-      showStatus('Please input a valid token.', 'error');
-      return;
-    }
-    localStorage.setItem(STORAGE_KEY, raw);
-    document.getElementById('token-panel').style.display = 'none';
-    const badge = document.getElementById('storage-status');
-    badge.innerText = 'Master Token Active in Browser';
-    badge.style.background = '#059669';
-    showStatus('Token saved. You can now resolve links immediately.', 'success');
+// Helper to decode JWT
+function getJwtIat(token) {
+  try {
+    const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString());
+    return payload.iat || Math.floor(Date.now() / 1000);
+  } catch {
+    return Math.floor(Date.now() / 1000);
   }
+}
 
-  function resetToken() {
-    localStorage.removeItem(STORAGE_KEY);
-    document.getElementById('jwt-token').value = '';
-    document.getElementById('token-panel').style.display = 'block';
-    const badge = document.getElementById('storage-status');
-    badge.innerText = 'Master Token Not Configured';
-    badge.style.background = '#d97706';
-    showStatus('Stored token cleared.', 'error');
-  }
+// Background worker
+async function processBypass(jobId, startUrl) {
+  let currentUrl = startUrl;
+  let step = 1;
 
-  function resolveAndRedirect() {
-    const token = localStorage.getItem(STORAGE_KEY);
-    const rawInput = document.getElementById('shortener-url').value.trim();
+  try {
+    while (step <= 10) {
+      jobs.set(jobId, { status: `Processing step ${step}...`, done: false });
 
-    if (!token) {
-      showStatus('Configure and save your master token first.', 'error');
-      document.getElementById('token-panel').style.display = 'block';
-      return;
-    }
+      // Fetch the page HTML
+      const pageRes = await fetch(currentUrl, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
+      });
+      const html = await pageRes.text();
 
-    if (!rawInput) {
-      showStatus('Please paste a link to resolve.', 'error');
-      return;
-    }
+      // Extract tokens
+      const tokenMatch = html.match(/"stepToken"\s*:\s*"([^"]+)"/);
+      const urlMatch = html.match(/"ajaxUrl"\s*:\s*"([^"]+)"/);
+      const postMatch = html.match(/"postId"\s*:\s*(-?\d+)/);
 
-    try {
-      const url = new URL(rawInput);
-      let targetUrlStr = null;
-
-      const encodedId = url.searchParams.get('id');
-      if (encodedId) {
-        targetUrlStr = atob(decodeURIComponent(encodedId));
-      } else {
-        targetUrlStr = rawInput;
+      if (!tokenMatch || !urlMatch) {
+        jobs.set(jobId, { status: 'Failed: Could not parse step tokens.', done: true, error: true });
+        return;
       }
 
-      const finalUrl = new URL(targetUrlStr);
-      finalUrl.searchParams.set('token', token);
-      finalUrl.searchParams.set('directLogin', 'true');
+      const stepToken = tokenMatch[1];
+      const ajaxUrl = urlMatch[1].replace(/\\/g, '');
+      const postId = postMatch ? postMatch[1] : -1;
 
-      showStatus('Target verified. Forwarding...', 'success');
-      window.location.href = finalUrl.toString();
+      // Calculate server wait time
+      const iat = getJwtIat(stepToken);
+      const waitTimeSec = Math.max(0, (iat + 37) - Math.floor(Date.now() / 1000));
+      
+      jobs.set(jobId, { status: `Step ${step}: Waiting ${waitTimeSec}s for server validation...`, done: false });
+      await new Promise(r => setTimeout(r, waitTimeSec * 1000));
 
-    } catch (err) {
-      showStatus('Invalid link or malformed Base64 parameters.', 'error');
+      // Post step completion
+      const fd = new FormData();
+      fd.set('action', 'wppro_add_post_cookie');
+      fd.set('post_id', postId);
+      fd.set('_step_token', stepToken);
+
+      const verifyRes = await fetch(ajaxUrl, {
+        method: 'POST',
+        body: fd,
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
+      });
+      const data = await verifyRes.json();
+
+      if (data.is_last && data.final_url) {
+        jobs.set(jobId, { status: 'Completed!', done: true, result: data.final_url });
+        return;
+      } else if (data.success && data.next_url) {
+        currentUrl = data.next_url;
+        step++;
+      } else {
+        jobs.set(jobId, { status: `Server rejected step: ${data.error || 'Unknown error'}`, done: true, error: true });
+        return;
+      }
     }
+  } catch (err) {
+    jobs.set(jobId, { status: `Error: ${err.message}`, done: true, error: true });
   }
+}
 
-  function showStatus(msg, type) {
-    const el = document.getElementById('status');
-    el.innerText = msg;
-    el.className = 'status ' + type;
-  }
-</script>
-
-</body>
-</html>`);
+// API Routes
+app.post('/api/start', (req, res) => {
+  const { url } = req.body;
+  const jobId = Math.random().toString(36).substring(2, 9);
+  jobs.set(jobId, { status: 'Queued', done: false });
+  processBypass(jobId, url);
+  res.json({ jobId });
 });
 
-app.get('/health', (req, res) => res.status(200).send('OK'));
+app.get('/api/status/:id', (req, res) => {
+  const job = jobs.get(req.params.id);
+  if (!job) return res.status(404).json({ error: 'Job not found' });
+  res.json(job);
+});
 
-// Bind explicitly to 0.0.0.0
-app.listen(PORT, '0.0.0.0', () => {
-  console
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Server listening on port ${PORT}`));
