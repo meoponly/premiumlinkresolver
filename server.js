@@ -105,7 +105,6 @@ app.get('/', (req, res) => {
 <script>
   const STORAGE_KEY = 'pw_master_access_token';
 
-  // Read saved state when page loads
   window.addEventListener('DOMContentLoaded', () => {
     const existing = localStorage.getItem(STORAGE_KEY);
     const badge = document.getElementById('storage-status');
@@ -165,16 +164,13 @@ app.get('/', (req, res) => {
       const url = new URL(rawInput);
       let targetUrlStr = null;
 
-      // Extract Base64 payload from '?id=' parameter if present
       const encodedId = url.searchParams.get('id');
       if (encodedId) {
-        // Base64 decode URL payload
         targetUrlStr = atob(decodeURIComponent(encodedId));
       } else {
         targetUrlStr = rawInput;
       }
 
-      // Attach token and redirect
       const finalUrl = new URL(targetUrlStr);
       finalUrl.searchParams.set('token', token);
       finalUrl.searchParams.set('directLogin', 'true');
@@ -198,9 +194,8 @@ app.get('/', (req, res) => {
 </html>`);
 });
 
-// Health check endpoint for Railway
 app.get('/health', (req, res) => res.status(200).send('OK'));
 
-app.listen(PORT, () => {
-  console.log('Resolver service running on port ' + PORT);
-});
+// Bind explicitly to 0.0.0.0
+app.listen(PORT, '0.0.0.0', () => {
+  console
